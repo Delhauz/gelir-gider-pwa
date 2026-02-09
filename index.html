@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gelir Gider Takip</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#4CAF50">
+
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<!-- PDF kütüphanesi -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+<style>
+body { font-family: Arial,sans-serif; background:#f4f6f8; margin:0; padding:20px; }
+.container { max-width: 1000px; margin:auto; background:white; padding:20px; border-radius:8px; }
+h1,h2 { text-align:center; margin:10px 0; }
+input, select, button { padding:6px; margin:4px; }
+button { cursor:pointer; }
+.tables { display: flex; flex-wrap: wrap; gap: 20px; justify-content:center; margin-top:20px; }
+table { width:100%; max-width:480px; border-collapse: collapse; background:white; box-shadow:0 0 5px rgba(0,0,0,0.1); }
+th, td { border:1px solid #ccc; padding:6px; text-align:center; }
+th { background:#eee; }
+.total { font-weight:bold; background:#fafafa; }
+.totals { display:flex; gap:20px; justify-content:center; margin-top:10px; margin-bottom:10px; }
+.totals p { font-weight:bold; background:#f0f0f0; padding:6px 12px; border-radius:4px; }
+canvas { width:100% !important; max-width:960px; height:300px !important; margin-top:20px; }
+@media(max-width: 600px){
+  .tables { flex-direction: column; align-items:center; }
+  table { max-width: 95%; }
+}
+#pdfButton { background:#4CAF50; color:white; border:none; padding:8px 12px; border-radius:5px; }
+</style>
+</head>
+
+<body>
+<div class="container">
+<h1>📒 Gelir – Gider Takibi</h1>
+
+<div>
+<input type="date" id="date">
+<input type="text" id="desc" placeholder="Açıklama">
+<input type="number" id="amount" placeholder="Tutar">
+<select id="type">
+<option value="expense">Gider</option>
+<option value="income">Gelir</option>
+</select>
+<button onclick="add()">Ekle</button>
+<button id="pdfButton" onclick="downloadPDF()">📄 PDF Olarak Kaydet</button>
+</div>
+
+<hr>
+
+<label>Başlangıç:</label>
+<input type="date" id="startDate">
+<label>Bitiş:</label>
+<input type="date" id="endDate">
+<button onclick="render()">Göster</button>
+
+<div class="totals">
+  <p>Toplam Gider: <span id="expenseTotalBox">0</span></p>
+  <p>Toplam Gelir: <span id="incomeTotalBox">0</span></p>
+</div>
+
+<div class="tables">
+<table>
+<thead>
+<tr>
+<th>Tarih</th><th>#</th><th>Açıklama</th><th>Tutar</th><th>İşlem</th>
+</tr>
+</thead>
+<tbody id="expenseList"></tbody>
+<tfoot>
+<tr class="total">
+<td></td><td></td><td>TOPLAM</td><td id="expenseTotal">0</td><td></td>
+</tr>
+</tfoot>
+</table>
+
+<table>
+<thead>
+<tr>
+<th>Tarih</th><th>#</th><th>Açıklama</th><th>Tutar</th><th>İşlem</th>
+</tr>
+</thead>
+<tbody id="incomeList"></tbody>
+<tfoot>
+<tr class="total">
+<td></td><td></td><td>TOPLAM</td><td id="incomeTotal">0</td><td></td>
+</tr>
+</tfoot>
+</table>
+</div>
+
+<h2>📊 Tarih Aralığı Gelir / Gider Grafiği</h2>
+<canvas id="rangeChart"></canvas>
+
+</div>
+
+<script>
+let data = JSON.parse(localStorage.getItem("data")) || [];
+let rangeChart;
+
+function add(){
+  const d = document.getElementById("date").value;
+  const desc = document.getElementById("desc").value;
+  const amount = Number(document.getElementById("amount").value);
+  const type = document.getElementById("type").value;
+  if(!d||!desc||!amount){alert("Eksik bilgi"); return;}
+  data.push({id: Date.now(), date:d, desc, amount, type});
+  save();
+}
+
+function save(){
+  localStorage.setItem("data", JSON.stringify(data));
+  render();
+}
+
+function removeItem(id){
+  if(!confirm("Silinsin mi?")) return;
+  data = data.filter(d=>d.id!==id);
+  save();
+}
+
+function editItem(id){
+  const item = data.find(d=>d.id===id);
+  const newDesc = prompt("Açıklama", item.desc);
+  const newAmount = prompt("Tutar", item.amount);
+  if(newDesc===null||newAmount===null) return;
+  item.desc = newDesc; item.amount = Number(newAmount);
+  save();
+}
+
+function render(){
+  const start = document.getElementById("startDate").value ? new Date(document.getElementById("startDate").value) : null;
+  const end = document.getElementById("endDate").value ? new Date(document.getElementById("endDate").value) : null;
+
+  document.getElementById("expenseList").innerHTML = "";
+  document.getElementById("incomeList").innerHTML = "";
+  let expenseTotal=0, incomeTotal=0;
+
+  const filtered = data.filter(d=>{
+    const dt = new Date(d.date);
+    if(start && dt < start) return false;
+    if(end && dt > end) return false;
+    return true;
+  }).sort((a,b)=>new Date(a.date)-new Date(b.date));
+
+  filtered.forEach(d=>{
+    const row = `<tr>
+      <td>${new Date(d.date).toLocaleDateString()}</td>
+      <td><input type="checkbox" class="selectRow" data-id="${d.id}"></td>
+      <td>${d.desc}</td>
+      <td>${d.amount}</td>
+      <td>
+        <button onclick="editItem(${d.id})">✏️</button>
+        <button onclick="removeItem(${d.id})">🗑️</button>
+      </td>
+    </tr>`;
+    if(d.type==="expense"){document.getElementById("expenseList").innerHTML += row; expenseTotal+=d.amount;}
+    else{document.getElementById("incomeList").innerHTML += row; incomeTotal+=d.amount;}
+  });
+
+  document.getElementById("expenseTotal").textContent = expenseTotal;
+  document.getElementById("incomeTotal").textContent = incomeTotal;
+  document.getElementById("expenseTotalBox").textContent = expenseTotal;
+  document.getElementById("incomeTotalBox").textContent = incomeTotal;
+
+  drawRangeChart(start,end);
+}
+
+function getSelectedIds(){
+  return Array.from(document.querySelectorAll(".selectRow:checked")).map(cb=>Number(cb.dataset.id));
+}
+
+function deleteSelected(){
+  const ids = getSelectedIds();
+  if(!ids.length){alert("Hiç seçilmedi"); return;}
+  if(!confirm(`${ids.length} satır silinsin mi?`)) return;
+  data = data.filter(d=>!ids.includes(d.id));
+  save();
+}
+
+function editSelected(){
+  const ids = getSelectedIds();
+  if(!ids.length){alert("Hiç seçilmedi"); return;}
+  ids.forEach(id=>editItem(id));
+}
+
+function drawRangeChart(start,end){
+  const filtered = data.filter(d=>{
+    const dt = new Date(d.date);
+    if(start && dt < start) return false;
+    if(end && dt > end) return false;
+    return true;
+  });
+
+  const map = {};
+  filtered.forEach(d=>{
+    if(!map[d.date]) map[d.date]={income:0, expense:0};
+    map[d.date][d.type] += d.amount;
+  });
+
+  const labels = Object.keys(map).sort();
+  const incomeData = labels.map(l=>map[l].income);
+  const expenseData = labels.map(l=>map[l].expense);
+
+  if(rangeChart) rangeChart.destroy();
+  const ctx = document.getElementById("rangeChart").getContext("2d");
+  rangeChart = new Chart(ctx,{
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        {label:"Gelir", data:incomeData, backgroundColor:'green'},
+        {label:"Gider", data:expenseData, backgroundColor:'red'}
+      ]
+    }
+  });
+}
+
+function downloadPDF(){
+  const element = document.querySelector('.tables');
+  html2pdf().set({
+    margin:1,
+    filename:'GelirGiderRaporu.pdf',
+    image:{type:'jpeg', quality:0.98},
+    html2canvas:{scale:2},
+    jsPDF:{unit:'cm', format:'a4', orientation:'portrait'}
+  }).from(element).save();
+}
+
+render();
+</script>
+</body>
+</html>
